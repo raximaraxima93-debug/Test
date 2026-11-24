@@ -1,0 +1,574 @@
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local WALK_SPEED = 30
+local HEADSHOT_DAMAGE = 20
+local BODY_DAMAGE = 10
+local SHOTGUN_PELLET_HEAD_DMG = 14 -- 8 ta pellet x 14 = 112 max headshot
+local SHOTGUN_PELLET_BODY_DMG = 6  -- 8 ta pellet x 6  = 48 max body
+local KNIFE_DAMAGE = 20
+local BOMB_DAMAGE = 500
+local BOMB_BLAST_RADIUS = 18
+
+local PISTOL_MODEL_NAME = "CZ-75"
+local KNIFE_TOOL_NAME = "Combat Knife"
+local SHIELD_MODEL_NAME = "Shield"
+local BOMB_TOOL_NAME = "ClassicTimebomb"
+local SHOTGUN_NAME = "BAIKAL MP-153"
+
+local combatRemote = ReplicatedStorage:FindFirstChild("RetroCombatEvent")
+if not combatRemote then
+    combatRemote = Instance.new("RemoteEvent")
+    combatRemote.Name = "RetroCombatEvent"
+    combatRemote.Parent = ReplicatedStorage
+end
+
+local function syncTemplate(srcName, templateName)
+    local src = ServerStorage:FindFirstChild(srcName)
+    if not src then
+        warn("[DropSystem] ServerStorage ichida '" .. srcName .. "' topilmadi!")
+        return
+    end
+
+    local old = ReplicatedStorage:FindFirstChild(templateName)
+    if old then old:Destroy() end
+
+    local clone = src:Clone()
+    clone.Name = templateName
+
+    for _, desc in ipairs(clone:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            desc.Anchored = true
+            desc.CanCollide = false
+            desc.Massless = true
+        elseif desc:IsA("Script") or desc:IsA("LocalScript") then
+            desc:Destroy()
+        end
+    end
+
+    clone.Parent = ReplicatedStorage
+end
+
+syncTemplate(PISTOL_MODEL_NAME, "CZ75_Template")
+syncTemplate(SHIELD_MODEL_NAME, "Shield_Template")
+syncTemplate(BOMB_TOOL_NAME, "ClassicTimebomb_Template")
+
+-- ServerStorage ichidagi BAIKAL MP-153 Model ni tayyor Tool qilib yaratish
+local function buildShotgunToolFromStorage()
+    local src = ServerStorage:FindFirstChild(SHOTGUN_NAME)
+    if not src then
+        warn("[DropSystem] ServerStorage ichida '" .. SHOTGUN_NAME .. "' topilmadi!")
+        return nil
+    end
+
+    if src:IsA("Tool") then
+        local tClone = src:Clone()
+        for _, d in ipairs(tClone:GetDescendants()) do
+            if d:IsA("BasePart") then
+                d.Anchored = false
+                d.CanCollide = false
+                d.Massless = true
+            end
+        end
+        return tClone
+    end
+
+    local tool = Instance.new("Tool")
+    tool.Name = SHOTGUN_NAME
+    tool.CanBeDropped = false
+    tool.RequiresHandle = true
+    tool.Grip = CFrame.new(0, -0.15, 0.35) * CFrame.Angles(0, math.rad(180), 0)
+
+    local modelClone = src:Clone()
+    local parts = {}
+    for _, d in ipairs(modelClone:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Anchored = false
+            d.CanCollide = false
+            d.Massless = true
+            table.insert(parts, d)
+        elseif d:IsA("Script") or d:IsA("LocalScript") then
+            d:Destroy()
+        end
+    end
+
+    if #parts == 0 then
+        tool:Destroy()
+        return nil
+    end
+
+    local handle = modelClone:FindFirstChild("Handle", true)
+    if not (handle and handle:IsA("BasePart")) then
+        handle = (modelClone:IsA("Model") and modelClone.PrimaryPart) or parts[1]
+        handle.Name = "Handle"
+    end
+
+    for _, child in ipairs(modelClone:GetChildren()) do
+        child.Parent = tool
+    end
+    modelClone:Destroy()
+
+    for _, p in ipairs(parts) do
+        if p ~= handle then
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = handle
+            weld.Part1 = p
+            weld.Parent = handle
+        end
+    end
+
+    return tool
+end
+
+local function applyWalkSpeed(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 and hum.WalkSpeed ~= WALK_SPEED then
+        hum.WalkSpeed = WALK_SPEED
+    end
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do
+    if plr.Character then applyWalkSpeed(plr.Character) end
+    plr.CharacterAdded:Connect(function(char)
+        applyWalkSpeed(char)
+        char:WaitForChild("Humanoid").WalkSpeed = WALK_SPEED
+    end)
+end
+
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function(char)
+        applyWalkSpeed(char)
+        char:WaitForChild("Humanoid").WalkSpeed = WALK_SPEED
+    end)
+end)
+
+task.spawn(function()
+    while true do
+        for _, plr in ipairs(Players:GetPlayers()) do
+            applyWalkSpeed(plr.Character)
+        end
+        task.wait(1)
+    end
+end)
+
+local function clearPlayerWeapons(plr)
+    local bp = plr:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            if item:IsA("Tool") and (
+                item.Name == "RetroPistol"
+                or item.Name == PISTOL_MODEL_NAME
+                or item.Name == KNIFE_TOOL_NAME
+                or item.Name == SHIELD_MODEL_NAME
+                or item.Name == BOMB_TOOL_NAME
+                or item.Name == SHOTGUN_NAME
+                ) then
+                item:Destroy()
+            end
+        end
+    end
+    if plr.Character then
+        for _, item in ipairs(plr.Character:GetChildren()) do
+            if item:IsA("Tool") and (
+                item.Name == "RetroPistol"
+                or item.Name == PISTOL_MODEL_NAME
+                or item.Name == KNIFE_TOOL_NAME
+                or item.Name == SHIELD_MODEL_NAME
+                or item.Name == BOMB_TOOL_NAME
+                or item.Name == SHOTGUN_NAME
+                ) then
+                item:Destroy()
+            end
+        end
+    end
+end
+
+local lastPhase = workspace:GetAttribute("MatchPhase") or "InMatch"
+workspace:GetAttributeChangedSignal("MatchPhase"):Connect(function()
+    local currentPhase = workspace:GetAttribute("MatchPhase") or "InMatch"
+    if lastPhase == "InMatch" and currentPhase ~= "InMatch" then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            clearPlayerWeapons(plr)
+        end
+        combatRemote:FireAllClients("ClearMatchPistol")
+    end
+    lastPhase = currentPhase
+end)
+
+local function isBlockedFromFront(targetModel, attackDir)
+    local tPlr = Players:GetPlayerFromCharacter(targetModel)
+    if tPlr and tPlr:GetAttribute("ShieldActive") == true then
+        local root = targetModel:FindFirstChild("HumanoidRootPart")
+        if root then
+            local lookFlat = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+            local dirFlat = Vector3.new(attackDir.X, 0, attackDir.Z)
+            if lookFlat.Magnitude > 0.01 and dirFlat.Magnitude > 0.01 then
+                lookFlat = lookFlat.Unit
+                dirFlat = dirFlat.Unit
+                if lookFlat:Dot(dirFlat) < -0.25 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function spawnBlockPopup(targetModel)
+    local head = targetModel:FindFirstChild("Head") or targetModel:FindFirstChild("HumanoidRootPart")
+    if not head then return end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 120, 0, 38)
+    bb.StudsOffset = Vector3.new(0, 2.7, 0)
+    bb.AlwaysOnTop = true
+    bb.Parent = head
+
+    local txt = Instance.new("TextLabel")
+    txt.Size = UDim2.new(1, 0, 1, 0)
+    txt.BackgroundTransparency = 1
+    txt.Font = Enum.Font.GothamBlack
+    txt.TextSize = 18
+    txt.TextColor3 = Color3.fromRGB(115, 195, 255)
+    txt.TextStrokeTransparency = 0.2
+    txt.Text = "BLOCKED"
+    txt.Parent = bb
+
+    TweenService:Create(bb, TweenInfo.new(0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        StudsOffset = bb.StudsOffset + Vector3.new(0, 1.8, 0),
+    }):Play()
+    Debris:AddItem(bb, 0.7)
+end
+
+local function spawnDamagePopup(targetModel, amount, isCrit)
+    local head = targetModel:FindFirstChild("Head") or targetModel:FindFirstChild("HumanoidRootPart")
+    if not head then return end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 120, 0, 44)
+    bb.StudsOffset = Vector3.new(math.random(-1, 1), 2.5, math.random(-1, 1))
+    bb.AlwaysOnTop = true
+    bb.Parent = head
+
+    local txt = Instance.new("TextLabel")
+    txt.Size = UDim2.new(1, 0, 1, 0)
+    txt.BackgroundTransparency = 1
+    txt.Font = Enum.Font.GothamBlack
+    txt.TextSize = isCrit and 24 or 20
+    txt.TextColor3 = isCrit and Color3.fromRGB(255, 45, 45) or Color3.fromRGB(255, 255, 255)
+    txt.TextStrokeTransparency = 0.2
+    txt.Text = "-" .. tostring(amount)
+    txt.Parent = bb
+
+    TweenService:Create(bb, TweenInfo.new(0.75, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        StudsOffset = bb.StudsOffset + Vector3.new(0, 2.2, 0),
+    }):Play()
+    Debris:AddItem(bb, 0.8)
+end
+
+local function detonateAt(pos, ownerPlr)
+    combatRemote:FireAllClients("BombExplode", pos)
+
+    for _, model in ipairs(workspace:GetDescendants()) do
+        if model:IsA("Model") then
+            local hum = model:FindFirstChildOfClass("Humanoid")
+            local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
+            if hum and root and hum.Health > 0 then
+                local delta = root.Position - pos
+                local dist = delta.Magnitude
+                if dist <= BOMB_BLAST_RADIUS then
+                    local dir = (dist > 0.05) and delta.Unit or Vector3.new(0, 0, 1)
+                    local modelPlr = Players:GetPlayerFromCharacter(model)
+                    local isSelf = (modelPlr == ownerPlr)
+                    if (not isSelf) and isBlockedFromFront(model, dir) then
+                        spawnBlockPopup(model)
+                    else
+                        hum:TakeDamage(BOMB_DAMAGE)
+                        spawnDamagePopup(model, BOMB_DAMAGE, true)
+                        if ownerPlr and not isSelf then
+                            combatRemote:FireClient(ownerPlr, "HitMarker", true, BOMB_DAMAGE, root.Position)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function giveToolFromStorage(plr, toolName)
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local bp = plr:FindFirstChildOfClass("Backpack")
+    if not char or not hum or not bp then return end
+    if bp:FindFirstChild(toolName) or char:FindFirstChild(toolName) then return end
+
+    if toolName == SHOTGUN_NAME then
+        local shotgunTool = buildShotgunToolFromStorage()
+        if shotgunTool then
+            shotgunTool.Parent = bp
+            hum:EquipTool(shotgunTool)
+        end
+        return
+    end
+
+    local template = ServerStorage:FindFirstChild(toolName)
+    if not template or not template:IsA("Tool") then
+        warn("[DropSystem] ServerStorage ichida '" .. toolName .. "' Tool topilmadi!")
+        return
+    end
+
+    local item = template:Clone()
+    for _, d in ipairs(item:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Anchored = false
+            d.CanCollide = false
+            d.Massless = true
+            d.LocalTransparencyModifier = (toolName == BOMB_TOOL_NAME) and 1 or 0
+        end
+    end
+    item.Parent = bp
+    hum:EquipTool(item)
+end
+
+local function hookPrompt(prompt)
+    if not prompt:IsA("ProximityPrompt") or prompt:GetAttribute("RetroDropHooked") then return end
+    prompt:SetAttribute("RetroDropHooked", true)
+    prompt.ActionText = "AirDrop ochish"
+    prompt.Triggered:Connect(function(plr)
+        if (workspace:GetAttribute("MatchPhase") or "InMatch") ~= "InMatch" then return end
+
+        local dropChoice = prompt:GetAttribute("SelectedWeapon")
+        if not dropChoice then
+            local roll = math.random(1, 5)
+            if roll == 1 then
+                dropChoice = "Pistol"
+            elseif roll == 2 then
+                dropChoice = "Knife"
+            elseif roll == 3 then
+                dropChoice = "Shield"
+            elseif roll == 4 then
+                dropChoice = "TimeBomb"
+            else
+                dropChoice = "Shotgun"
+            end
+            prompt:SetAttribute("SelectedWeapon", dropChoice)
+        end
+
+        if dropChoice == "Knife" then
+            giveToolFromStorage(plr, KNIFE_TOOL_NAME)
+        elseif dropChoice == "Shield" then
+            combatRemote:FireClient(plr, "GiveShield")
+        elseif dropChoice == "TimeBomb" then
+            giveToolFromStorage(plr, BOMB_TOOL_NAME)
+        elseif dropChoice == "Shotgun" then
+            giveToolFromStorage(plr, SHOTGUN_NAME)
+        else
+            combatRemote:FireClient(plr, "GiveRetroPistol")
+        end
+    end)
+end
+
+for _, obj in ipairs(workspace:GetDescendants()) do
+    if obj:IsA("ProximityPrompt") then hookPrompt(obj) end
+end
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("ProximityPrompt") then hookPrompt(obj) end
+end)
+
+combatRemote.OnServerEvent:Connect(function(shooter, action, a, b, c)
+    if action == "ShieldState" then
+        local active = (a == true)
+        shooter:SetAttribute("ShieldActive", active)
+        combatRemote:FireAllClients("RemoteShieldState", shooter, active)
+        return
+    end
+
+    if action == "EquipState" then
+        combatRemote:FireAllClients("RemoteEquipState", shooter, a == true)
+        return
+    end
+
+    if action == "ReloadState" then
+        combatRemote:FireAllClients("RemoteReloadState", shooter, a == true)
+        return
+    end
+
+    if action == "MoveState" then
+        combatRemote:FireAllClients("RemoteMoveState", shooter, tonumber(a) or 0)
+        return
+    end
+
+    if action == "BombTickSound" then
+        combatRemote:FireAllClients("PlayBombTick", shooter)
+        return
+    end
+
+    if action == "ThrowClassicBomb" then
+        if typeof(a) ~= "Vector3" or typeof(b) ~= "Vector3" then return end
+        local originPos = a
+        local landPos = b
+        local fuseSec = math.clamp(tonumber(c) or 8.0, 1.0, 10.0)
+        local char = shooter.Character
+
+        if char then
+            local t1 = char:FindFirstChild(BOMB_TOOL_NAME)
+            if t1 then t1:Destroy() end
+        end
+        local bp = shooter:FindFirstChildOfClass("Backpack")
+        if bp then
+            local t2 = bp:FindFirstChild(BOMB_TOOL_NAME)
+            if t2 then t2:Destroy() end
+        end
+
+        combatRemote:FireAllClients("SpawnClassicBomb", originPos, landPos, fuseSec)
+
+        task.delay(fuseSec, function()
+            if (workspace:GetAttribute("MatchPhase") or "InMatch") ~= "InMatch" then return end
+            detonateAt(landPos, shooter)
+        end)
+        return
+    end
+
+    if action == "KnifeSwing" then
+        local char = shooter.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not char or not hrp or not hum or hum.Health <= 0 then return end
+        if not char:FindFirstChild(KNIFE_TOOL_NAME) then return end
+
+        local look = hrp.CFrame.LookVector
+        local bestTarget, bestDist = nil, 8.5
+
+        for _, model in ipairs(workspace:GetDescendants()) do
+            if model:IsA("Model") and model ~= char then
+                local tHum = model:FindFirstChildOfClass("Humanoid")
+                local tRoot = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
+                if tHum and tRoot and tHum.Health > 0 then
+                    local offset = tRoot.Position - hrp.Position
+                    local dist = offset.Magnitude
+                    if dist <= bestDist and dist > 0.01 then
+                        local dirToTarget = offset.Unit
+                        if look:Dot(dirToTarget) >= 0.35 then
+                            bestDist = dist
+                            bestTarget = { Model = model, Hum = tHum, Root = tRoot, Dir = dirToTarget }
+                        end
+                    end
+                end
+            end
+        end
+
+        if bestTarget then
+            if isBlockedFromFront(bestTarget.Model, bestTarget.Dir) then
+                spawnBlockPopup(bestTarget.Model)
+                combatRemote:FireClient(shooter, "ShieldBlocked", bestTarget.Root.Position)
+            else
+                bestTarget.Hum:TakeDamage(KNIFE_DAMAGE)
+                spawnDamagePopup(bestTarget.Model, KNIFE_DAMAGE, true)
+                combatRemote:FireClient(shooter, "HitMarker", true, KNIFE_DAMAGE, bestTarget.Root.Position)
+            end
+        end
+        return
+    end
+
+    -- BAIKAL MP-153 (8 ta sochma o'q / buckshot) otish logikasi
+    if action == "ShotgunBlast" then
+        if typeof(a) ~= "Vector3" or typeof(b) ~= "table" then return end
+        local char = shooter.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not char or not hum or hum.Health <= 0 then return end
+        if not char:FindFirstChild(SHOTGUN_NAME) then return end
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+
+        local damagePerModel = {}
+        local critPerModel = {}
+        local hitPosPerModel = {}
+        local endPoints = {}
+
+        for i = 1, math.min(#b, 8) do
+            local targetPt = b[i]
+            if typeof(targetPt) == "Vector3" then
+                local delta = targetPt - a
+                if delta.Magnitude > 0.2 then
+                    local dir = delta.Unit
+                    local hit = workspace:Raycast(a, dir * 135, params)
+                    local endPos = hit and hit.Position or (a + dir * 135)
+                    table.insert(endPoints, endPos)
+
+                    if hit and hit.Instance then
+                        local hitModel = hit.Instance:FindFirstAncestorOfClass("Model")
+                        local targetHum = hitModel and hitModel:FindFirstChildOfClass("Humanoid")
+                        if targetHum and hitModel ~= char and targetHum.Health > 0 then
+                            if isBlockedFromFront(hitModel, dir) then
+                                spawnBlockPopup(hitModel)
+                                combatRemote:FireClient(shooter, "ShieldBlocked", endPos)
+                            else
+                                local targetHead = hitModel:FindFirstChild("Head")
+                                local isHead = (hit.Instance.Name == "Head") or (targetHead ~= nil and hit.Instance:IsDescendantOf(targetHead))
+                                local d = isHead and SHOTGUN_PELLET_HEAD_DMG or SHOTGUN_PELLET_BODY_DMG
+                                damagePerModel[hitModel] = (damagePerModel[hitModel] or 0) + d
+                                if isHead then critPerModel[hitModel] = true end
+                                hitPosPerModel[hitModel] = endPos
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        combatRemote:FireAllClients("RemoteShotgunBlast", shooter, a, endPoints)
+
+        for hitModel, totalDmg in pairs(damagePerModel) do
+            local tHum = hitModel:FindFirstChildOfClass("Humanoid")
+            if tHum and tHum.Health > 0 and totalDmg > 0 then
+                tHum:TakeDamage(totalDmg)
+                local isCrit = critPerModel[hitModel] == true
+                spawnDamagePopup(hitModel, totalDmg, isCrit)
+                combatRemote:FireClient(shooter, "HitMarker", isCrit, totalDmg, hitPosPerModel[hitModel])
+            end
+        end
+        return
+    end
+
+    if action ~= "Shoot" or typeof(a) ~= "Vector3" or typeof(b) ~= "Vector3" then return end
+    local char = shooter.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum or hum.Health <= 0 then return end
+
+    local dir = (b - a)
+    if dir.Magnitude < 0.2 then return end
+    dir = dir.Unit
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char }
+
+    local hit = workspace:Raycast(a, dir * 450, params)
+    local endPos = hit and hit.Position or (a + dir * 450)
+
+    combatRemote:FireAllClients("RemoteShot", shooter, a, endPos)
+
+    if hit and hit.Instance then
+        local hitModel = hit.Instance:FindFirstAncestorOfClass("Model")
+        local targetHum = hitModel and hitModel:FindFirstChildOfClass("Humanoid")
+        if targetHum and hitModel ~= char and targetHum.Health > 0 then
+            if isBlockedFromFront(hitModel, dir) then
+                spawnBlockPopup(hitModel)
+                combatRemote:FireClient(shooter, "ShieldBlocked", endPos)
+                return
+            end
+
+            local targetHead = hitModel:FindFirstChild("Head")
+            local isHead = (hit.Instance.Name == "Head") or (targetHead ~= nil and hit.Instance:IsDescendantOf(targetHead))
+            local dmg = isHead and HEADSHOT_DAMAGE or BODY_DAMAGE
+            targetHum:TakeDamage(dmg)
+            spawnDamagePopup(hitModel, dmg, isHead)
+            combatRemote:FireClient(shooter, "HitMarker", isHead, dmg, endPos)
+        end
+    end
+end)
